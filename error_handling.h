@@ -1,0 +1,6 @@
+#ifndef ERROR_HANDLING_H_GUARD
+#define ERROR_HANDLING_H_GUARD
+
+// TODO
+
+#endif

@@ -12,7 +12,7 @@ bin/tcp-mirror: bin/main.o
 	$(LD_CMD) bin/main.o -o bin/tcp-mirror
 
 bin/main.o: bin/.dirstamp main.c
-	$(CC_CMD) main.c -o bin/main.o
+	$(CC_CMD) -c main.c -o bin/main.o
 
 bin/.dirstamp:
 	mkdir -p bin

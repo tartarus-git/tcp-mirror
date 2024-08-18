@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include "program_exit_code.h"
+
 void print_log(log_entry_type_t entry_type, const char * const msg)
 {
 	const char *entry_type_string;
@@ -16,6 +18,12 @@ void print_log(log_entry_type_t entry_type, const char * const msg)
 	}
 
 	printf("tcp-mirror: %s: %s\n", entry_type_string, msg);
+}
+
+void print_log_and_dirty(log_entry_type_t entry_type, const char * const msg)
+{
+	print_log(entry_type, msg);
+	dirty_program_exit_code();
 }
 
 void print_log_fatal_error_and_exit(const char * const msg)

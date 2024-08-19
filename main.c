@@ -8,27 +8,26 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "program_exit_code.h"
 #include "parse_args.h"
 #include "generic_data_structures.h"
+#include "error_handling.h"
 
-static int program_exit_code = EXIT_SUCCESS;
-
+/*
 enum signal_flags_flag_t {
 	SFF_SIGINT = 1,
 	SFF_SIGTERM = 2
 };
 static volatile uint8_t signal_flags = 0;
 
+// TODO: Check again about signature and about "proper" naming convention for the argument and the function name or whatever
 static void signal_handler(int signal) {
-	// TODO: set flags
+	switch (signal) {
+	case SIGINT: signal_flags |= SFF_SIGINT; break;
+	case SIGTERM: signal_flags |= SFF_SIGTERM; break;
+	}
 }
-
-
-DECLARE_RUNTIME_FIXED_VECTOR_TYPE(pollfd_vector_t, pollfd)
-DECLARE_RUNTIME_FIXED_VECTOR_TYPE(size_t_vector_t, size_t)
-
-static size_t_vector_t poll_random_service_queue;
-static pollfd_vector_t poll_list;
+*/
 
 static void serve_connection(const int conn_socket) {
 	char buffer[BUFSIZ];
@@ -36,7 +35,8 @@ static void serve_connection(const int conn_socket) {
 	if (bytes_read < 0) {
 		switch (errno) {
 		case EAGAIN:
-			// TODO: report non-fatal bug and set exit code and exit out of this function.
+			print_log_and_dirty(LET_BUG, "serve_connection: read() returned EAGAIN even though poll was set, shouldn't happen");
+			return;
 		case EINTR:
 			// TODO: call signal response function.
 		// TODO: go through possible errors, because some of them are clients fault probably, and shouldn't take down this server.
@@ -56,6 +56,12 @@ static void serve_connection(const int conn_socket) {
 		bytes_to_write -= bytes_written;
 	}
 }
+
+DECLARE_RUNTIME_FIXED_VECTOR_TYPE(pollfd_vector_t, pollfd)
+DECLARE_RUNTIME_FIXED_VECTOR_TYPE(size_t_vector_t, size_t)
+
+static size_t_vector_t poll_random_service_queue;
+static pollfd_vector_t poll_list;
 
 static void attend_to_hot_poll_list()
 {
@@ -102,66 +108,100 @@ static void attend_to_hot_poll_list()
 	}
 }
 
+void add_signalfd_to_poll_list(int signal)
+{
+	sigset_t mask;
+	if (sigemptyset(&mask) < 0) {
+		log_fatal_bug_and_exit("add_signalfds_to_poll_list: sigemptyset() error (errno: %s: %s)",
+				custom_strerror_name(errno),
+				custom_strerror_desc(errno));
+	}
+	if (sigaddset(&mask, signal) < 0) {
+		log_fatal_bug_and_exit("add_signalfds_to_poll_list: sigaddset() error (errno: %s: %s)",
+				custom_strerror_name(errno),
+				custom_strerror_desc(errno));
+	}
+
+	const int fd = signalfd(-1, mask, SFD_CLOEXEC);
+	if (fd < 0) {
+		log_fatal_error_and_exit("add_signalfds_to_poll_list: signalfd() error (errno: %s: %s)",
+				custom_strerror_name(errno),
+				custom_strerror_desc(errno));
+	}
+
+	pollfd new_poll_entry = {
+		.fd = fd,
+		.events = POLLIN,
+		.revents = 0
+	}
+	if (pollfd_vector_t__push(poll_list &new_poll_entry) == false) {
+		log_fatal_bug_and_exit("add_signalfds_to_poll_list: pollfd_vector_t__push() failed, capacity reached, shouldn't happen");
+	}
+}
+
 int main(const int argc, const char * const * const argv)
 {
 	const prog_args_t args = parse_args(argc, argv);
 
 	const int listener_socket_fd = socket(args.address->ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
 	if (listener_socket_fd == -1) {
-		// TODO: report fatal error here, failed to create listener socket, return errno and use strerr syscall to get error string.
+		log_fatal_error_and_exit("listener_socket_fd socket() failed (errno: %s: %s)",
+				custom_strerror_name(errno),
+				custom_strerror_desc(errno));
 	}
 
 	if (bind(listener_socket_fd, (const sockaddr*)args.address, address_size) < 0) {
-		// TODO: report fatal error here, failed to bind listener socket, return errno with strerr.
-		// TODO: check to make sure you don't need special gai_strerr-like thing to create string from errno for all these syscalls.
+		log_fatal_error_and_exit("bind(listener_socket_fd) failed (errno: %s: %s)",
+				custom_strerror_name(errno),
+				custom_strerror_desc(errno));
 	}
 
-	// max_concurrent_clients + 1 because we need extra room for listener socket
+	// max_concurrent_clients + 2 + 1 because we need extra room for signalfds and listener socket
+	poll_list = pollfd_vector_t__construct(args.max_concurrent_clients + 2 + 1);
 	poll_random_service_queue = size_t_vector_t__construct(args.max_concurrent_clients);
-	poll_list = pollfd_vector_t__construct(args.max_concurrent_clients + 1);
+
+	add_signalfd_to_poll_list(SIGINT);
+	add_signalfd_to_poll_list(SIGTERM);
+
 	pollfd new_poll_entry = {
 		.fd = listener_socket_fd,
 		.events = POLLIN,
 		.revents = 0
 	};
 	if (pollfd_vector_t__push(poll_list, &new_poll_entry) == false) {
-		// TODO: report fatal bug here
+		log_fatal_bug_and_exit("pollfd_vector_t__push(listener_socket_fd) failed, capacity reached, shouldn't happen");
 	}
 
-	while (true) {
+	while (true)
+	{
 		int poll_result = poll(poll_list.data, poll_list.length, -1);
-		if (poll_result < 0) {
+		if (poll_result < 0)
+		{
 			switch (errno) {
+
 			case EINTR:
-				if (signal_flags != 0) { goto poll_loop_escape; }
-				break;
 			case EAGAIN:
 				break;
+
 			default:
-				// TODO: report fatal poll error with strerr
+				log_fatal_error_and_exit("poll(poll_list) failed (errno: %s: %s)",
+						custom_strerror_name(errno),
+						custom_strerror_desc(errno));
+
 			}
 		}
-		else if (poll_result == 0) {
-			// TODO: report fatal bug here, this case shouldn't happen because timeout is -1
+		else if (poll_result == 0)
+		{
+			log_fatal_bug_and_exit("poll(poll_list) returned 0 with timeout -1, shouldn't happen");
 		}
-		else {
+		else
+		{
 			poll_random_service_queue.length = poll_result;
+			// TODO: Why don't you pass this as a parameter instead of doing this weird setting thing here? You should consider doing it
+			// differently.
 			attend_to_hot_poll_list();
 		}
 	}
-poll_loop_escape:
 
-	if (signal_flags & ~(SFF_SIGINT | SFF_SIGTERM)) {
-		// TODO: report non-fatal bug signal flags had unexpected value
-		// TODO: Set return value to 1
-	}
-
-	if (signal_flags & SFF_SIGINT) {
-		// TODO: report sigint and exit
-	}
-	if (signal_flags & SFF_SIGTERM) {
-		// TODO: report sigterm and exit
-	}
-
-	return program_exit_code;
+	return get_program_exit_code();
 }

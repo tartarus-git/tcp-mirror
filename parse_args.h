@@ -6,4 +6,6 @@ typedef struct prog_args_t {
 	size_t concurrent_clients;
 } prog_args_t;
 
+prog_args_t parse_args(const int argc, const char * const * const argv);
+
 #endif
